@@ -1,0 +1,270 @@
+"""Import required modules"""
+%matplotlib inline
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+
+import cm50268_lab2_setup as lab2
+
+
+"""Define parameters"""
+sig_gen = 0.2  # Standard deviation
+s2_gen = sig_gen**2  # Variance
+r_gen = 1  # Basis function width used to generate the data
+x_max = 10  # x-limit of the data
+#
+N_train = 30
+N_test = 250
+
+# Parameters that determine the basis set used for modelling
+# - note that the length scale "r" will be varied
+#
+M = 16 # Number of functions, spaced equally
+centres = np.linspace(0, x_max, M)
+
+
+"""Generate data and visualise a test fit"""
+# Generate training data
+seed = 4
+Data = lab2.DataGenerator(m=9, r=r_gen, noise=sig_gen, rand_offset=seed)
+x_train, t_train = Data.get_data('TRAIN', N_train)
+x_test, t_test = Data.get_data('TEST', N_test)
+
+# Demonstrate use of basis
+r = r_gen * 0.5  # Example model uses basis functions that are too narrow
+RBF = lab2.RBFGenerator(centres, r) # centres was fixed earlier
+PHI_train = RBF.evaluate(x_train)
+PHI_test = RBF.evaluate(x_test)
+
+# Find posterior mean for fixed guesses for alpha and s2
+alph = 1e-12
+s2 = 0.1**2
+mu, _ = lab2.compute_posterior(PHI_train, t_train, alph, s2)
+y_test = PHI_test @ mu
+
+# Show the training data and generating function, plus our mean fit
+lab2.plot_regression(x_train, t_train, x_test, t_test, y_test)
+plt.title("Data, Underlying Function & Example Predictor")
+pass 
+
+
+"""Compute visualise hyperparameter posterior"""
+def log_prob_alph_r_given_t(alph, r, s2, x, t, centres):
+    
+    RBF = lab2.RBFGenerator(centres, r)
+    PHI_train = RBF.evaluate(x)
+    P_star = lab2.compute_log_marginal(PHI_train, t, alph, s2)
+
+    return P_star
+alph = np.linspace(-9, 6, 200)
+r = np.linspace(-2, 2, 200)
+
+log_alph = 10**alph
+log_r = 10**r
+
+x_y = []
+x = []
+y = []
+z = []
+a_track = []
+results = []
+for rec in log_r:     
+    for a in log_alph:
+        prob_r_given_t = log_prob_alph_r_given_t(a, rec, s2_gen, x_train, t_train, centres)
+        results.append(prob_r_given_t)      
+  
+z = results
+z = np.array(z)
+i = np.unravel_index(z.reshape(200, 200).argmax(), z.reshape(200, 200).shape)
+max_alph = alph[i[1]]
+max_r = r[i[0]]
+
+plt.figure()
+plt.contourf(alph, r, z.reshape(200, 200))
+plt.title('Visualisation of log p(alpha,r|t)')
+plt.xlabel('log(alph)')
+plt.ylabel('log(r)')
+plt.show()
+
+
+plt.figure()
+plt.contourf(alph, r, 10**z.reshape(200, 200))
+plt.title('Visualisation of p(alpha,r|t)')
+plt.xlabel('log(alph)')
+plt.ylabel('log(r)')
+plt.show()
+
+print('Maximum r is:', max_r)
+print('Maximum alpha is:', max_alph)
+
+
+"""Importance sampling function"""
+alph = alph.reshape(200,1)
+r = r.reshape(200, 1)
+x = np.concatenate((alph, r), axis=1)
+
+def importance(num_samples, log_pstar, log_qstar, qrvs, fun):
+    weights = np.zeros(num_samples)
+    theta = qrvs(num_samples)
+    func = np.zeros(num_samples)
+
+    for i in range(num_samples):        
+        weights[i] = np.exp(log_pstar(theta[i]) - log_qstar(theta[i]))    
+        func[i] = fun(theta[i])
+    
+    part_2 = func * weights
+    F_hat = 1/np.cumsum(weights) * np.cumsum(part_2)
+        
+    return F_hat
+
+
+"""Test convergence of Importance sampling and visualise"""
+from scipy import stats
+fun = lambda x: 10**x[1]
+log_pstar = lambda x: log_prob_alph_r_given_t(10**x[0], 10**x[1], s2_gen, x_train, t_train, centres)
+#### Test the importance sampler
+log_qstar_uniform = lambda x: np.c_[stats.uniform(-9, 15).logpdf(x[0]) + stats.uniform(-2, 4).logpdf(x[1])]
+qrvs_uniform = lambda x: np.c_[stats.uniform(-9, 15).rvs(x), stats.uniform(-2, 4).rvs(x)]
+
+log_qstar_un = lambda x: stats.multivariate_normal.logpdf(x, (-1.5, 0), ((15/6)**2, (4/6)**2))
+qrvs_un = lambda x: stats.multivariate_normal((-1.5, 0), ((15/6)**2, (4/6)**2)).rvs(x)
+
+var_max = 1
+mean_max = 1
+
+log_qstar_norm = lambda x: stats.multivariate_normal.logpdf(x, (max_alph, max_r), (var_max, mean_max))
+qrvs_norm = lambda x: stats.multivariate_normal((max_alph, max_r), (var_max, mean_max)).rvs(x)
+
+expectation_uniform = importance(8000, log_pstar, log_qstar_uniform, qrvs_uniform, fun)
+expectation_un = importance(8000, log_pstar, log_qstar_un, qrvs_un, fun)
+expectation_norm = importance(8000, log_pstar, log_qstar_norm, qrvs_norm, fun)
+
+plt.figure(num=None, figsize=(6, 4), dpi=180, facecolor='w', edgecolor='k')
+plt.plot(expectation_uniform, label='Uniform')
+plt.plot(expectation_un, label='Non-max Gaussian')
+plt.plot(expectation_norm, label='Max Gaussian')
+plt.title('Expectation convergence')
+plt.legend()
+plt.xlabel('Samples')
+plt.ylabel('Expectation')
+plt.show()
+print('Uniform r with 8000 samples is', expectation_uniform[-1])
+print('Non-max Gaussian r with 8000 samples is', expectation_un[-1])
+print('Max Gaussian r with 8000 samples is', expectation_norm[-1])
+
+"""Iterate over several runs and compare results of samplers then visualise"""
+iterations = 50
+
+exp_uniform = np.zeros([iterations, 1000])
+exp_un = np.zeros([iterations, 1000])
+exp_norm = np.zeros([iterations, 1000])
+
+for i in range(iterations):
+    exp_uniform[i] = importance(1000, log_pstar, log_qstar_uniform, qrvs_uniform, fun)
+    exp_un[i] = importance(1000, log_pstar, log_qstar_un, qrvs_un, fun)
+    exp_norm[i] = importance(1000, log_pstar, log_qstar_norm, qrvs_norm, fun)
+    
+var_uniform = np.var(exp_uniform, axis=0)
+var_un = np.var(exp_un, axis=0)
+var_norm = np.var(exp_norm, axis=0)
+
+plt.figure(num=None, figsize=(6, 4), dpi=180, facecolor='w', edgecolor='k')
+plt.plot(var_uniform, label='Uniform')
+plt.plot(var_un, label='Non-max Gaussian')
+plt.plot(var_norm, label='Max Gaussian')
+plt.legend()
+plt.xlabel('Iteration')
+plt.ylabel('Variance')
+plt.title('Variance plot')
+plt.show()
+
+
+"""MCM and the metropolis algo define functions and visualise burn-in"""
+def metropolis(num_samples, pstar, qrvs, x0):
+    
+    accepted = []
+    rejected = []
+    theta = x0
+    
+    for i in range(num_samples):
+        x_dash = qrvs(theta)
+        P_star_current = pstar(theta)
+        P_star_new = pstar(x_dash)
+        
+        if P_star_new > P_star_current:
+            theta = x_dash
+            accepted.append(x_dash)
+        else:
+            rejected.append(x_dash)
+    
+    return np.array(accepted), np.array(rejected)
+    
+narrow_scale = 0.0001
+broad_scale = 0.88
+opt_scale = 0.08
+
+qrvs_narrow = lambda x: stats.multivariate_normal.rvs(size=1, mean=x, cov=narrow_scale)
+qrvs_broad = lambda x: stats.multivariate_normal.rvs(size=1, mean=x, cov=broad_scale)
+qrvs_opt = lambda x: stats.multivariate_normal.rvs(size=1, mean=x, cov=opt_scale)
+
+alph = np.linspace(-9, 6, 200)
+r = np.linspace(-2, 2, 200)
+
+iterations = 50
+
+narrow_scale = 0.0001
+broad_scale = 0.88
+opt_scale = 0.08
+expectation_norm = importance(8000, log_pstar, log_qstar_norm, qrvs_norm, fun)
+#
+# x0 = np.random.seed(np.array([log_alph, log_r]))
+samples_narrow, rejected_narrow = metropolis(1000, log_pstar, qrvs_narrow, [-7, 1.5])   
+print('Acceptance rate with too narrow scale:', (1000-len(rejected_narrow)) / 1000 * 100, '%')
+# expectation_narrow = importance(8000, log_pstar, log_qstar_norm, qrvs_narrow, fun)
+
+samples_broad, rejected_broad = metropolis(1000, log_pstar, qrvs_broad, [-7, 1.5])
+print('Acceptance rate with too broad scale:', (1000-len(rejected_broad)) / 1000 * 100, '%')
+# expectation_broad = importance(8000, log_pstar, log_qstar_norm, qrvs_broad, fun)
+
+samples_opt, rejected_opt = metropolis(1000, log_pstar, qrvs_opt, [-7, 1.5])
+print('Acceptance rate with "optimum" scale:', (1000-len(rejected_opt)) / 1000 * 100, '%')
+# expectation_opt = importance(8000, log_pstar, log_qstar_norm, qrvs_opt, fun)
+
+
+plt.figure(num=None, figsize=(6, 4), dpi=180, facecolor='w', edgecolor='k')
+plt.plot(expectation_norm, label='Gaussian')
+plt.title('Expectation convergence')
+plt.legend()
+plt.xlabel('Samples')
+plt.ylabel('Expectation')
+plt.show()
+
+print('Final r value is:', expectation_norm[-1])
+
+# plt.figure(num=None, figsize=(6, 4), dpi=180, facecolor='w', edgecolor='k')
+# plt.figure()
+plt.contourf(alph, r, z.reshape(200, 200))
+plt.scatter(samples_narrow[:,0], samples_narrow[:,1], color='r')
+plt.title('Visualisation of log p(alpha,r|t) with metropolis')
+plt.xlabel('log(alph)')
+plt.ylabel('log(r)')
+plt.show()
+
+# plt.figure(num=None, figsize=(6, 4), dpi=180, facecolor='w', edgecolor='k')
+# plt.figure()
+plt.contourf(alph, r, z.reshape(200, 200))
+plt.scatter(samples_broad[:,0], samples_broad[:,1], color='r')
+plt.title('Visualisation of log p(alpha,r|t) with metropolis')
+plt.xlabel('log(alph)')
+plt.ylabel('log(r)')
+plt.show()
+
+# plt.figure(num=None, figsize=(6, 4), dpi=180, facecolor='w', edgecolor='k')
+# plt.figure()
+plt.contourf(alph, r, z.reshape(200, 200))
+plt.scatter(samples_opt[:,0], samples_opt[:,1], color='r')
+plt.title('Visualisation of log p(alpha,r|t) with metropolis')
+plt.xlabel('log(alph)')
+plt.ylabel('log(r)')
+plt.show()
+    
