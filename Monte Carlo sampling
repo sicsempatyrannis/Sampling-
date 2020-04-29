@@ -48,7 +48,7 @@ plt.title("Data, Underlying Function & Example Predictor")
 pass 
 
 
-"""Compute visualise hyperparameter posterior"""
+"""Compute and visualise hyperparameter posterior"""
 def log_prob_alph_r_given_t(alph, r, s2, x, t, centres):
     
     RBF = lab2.RBFGenerator(centres, r)
